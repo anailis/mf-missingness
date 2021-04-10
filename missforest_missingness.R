@@ -44,14 +44,18 @@ mcar <- function(dataMatrix, percentMissing) {
   return(dataMatrix)
 }
 
-#
-mar <- function(dataMatrix, percentMissing) {
-  # logistic regression
+# generates NAs in Y missing at random (dependent on X and Z1)
+mar <- function(dataMatrix, alpha) {
+  dataDf <- dataMatrix %>%
+    as_tibble() %>%
+    mutate(missing = logit(alpha + X + Z1)) %>%
+    mutate(Y = ifelse(missing, NA, Y))
+  return(dataDf)
 }
 
 # impute data with the missforest algorithm 
 impute <- function(dataMatrix, variables) {
-  dataMatrix <- dataMatrix[,variables]
+  dataMatrix <- dataMatrix[,c("Y", variables)]
   results <- missForest(dataMatrix)
   return(results)
 }
@@ -63,7 +67,7 @@ analyse <- function(dataMatrix, varset) {
 }
 
 # store results in a database 
-store_results <- function(results, runID, percentMissing, impMethod, impVars, db) {
+store_results <- function(results, runID, percentMissing, impMethod, impVars, missingType, db) {
   coef <- summary(results)$coefficients['X','Estimate']
   # because X has a correlation of 0.6 with Y
   # only considering the exposure coefficient, not the constant coefficient here 
@@ -74,8 +78,8 @@ store_results <- function(results, runID, percentMissing, impMethod, impVars, db
   
   dbSendQuery(conn = db,
             "INSERT INTO results
-            VALUES (?, ?, ?, ?, ?, ?, ?)", 
-            c(runID, percentMissing, impMethod, impVars, coef, bias, se))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+            c(runID, percentMissing, impMethod, impVars, missingType, coef, bias, se))
 }
 
 # SET UP DATABASE
@@ -89,6 +93,7 @@ dbSendQuery(conn = resultsDb,
              percentMissing INTEGER,
              imputationMethod TEXT,
              imputationVars TEXT,
+             missingType TEXT,
              regressCoef REAL,
              bias REAL,
              se REAL)")
@@ -119,12 +124,12 @@ for (percent in c(1, 5, 10, 20, 40, 60, 80, 90)) {
                       c("X", "Z1", "Z2", "Z3", "Z4", "Z5", "Z6", "Z8", "Z9", "Z10", "Z11"))) {
       results_cc <- analyse(sim_data, varset)
       n = n + 1
-      store_results(results_cc, n, percent, 'complete cases', varset, resultsDb)
+      store_results(results_cc, n, percent, 'complete cases', varset, 'mcar', resultsDb)
       
       imputed <- impute(sim_data, varset)
-      results_imp <- analyse(imputed$ximp)
+      results_imp <- analyse(imputed$ximp, varset)
       n = n + 1
-      store_results(results_imp, n, percent, 'missForest', varset, resultsDb)
+      store_results(results_imp, n, percent, 'missForest', varset, 'mcar', resultsDb)
     }
   }
 }
@@ -140,4 +145,26 @@ for (percent in c(1, 5, 10, 20, 40, 60, 80, 90)) {
 # variables to be included in imputation: Y, X, Z1 - Z4
 # variables to be included in imputation: Y, X, Z1 - Z11
 
+for (percent in c(1, 5, 10, 20, 40, 60, 80, 90)) {
+  for (seed in seeds) {
+    sim_data <- create_data(seed)
+    sim_data <- mar(sim_data, percent)
+    
+    for (varset in list(c("X", "Z1"), 
+                        c("X", "Z3"), 
+                        c("X", "Z1", "Z2", "Z3", "Z4"),
+                        c("X", "Z1", "Z2", "Z3", "Z4", "Z5", "Z6", "Z8", "Z9", "Z10", "Z11"))) {
+      results_cc <- analyse(sim_data, varset)
+      n = n + 1
+      store_results(results_cc, n, percent, 'complete cases', varset, 'mar', resultsDb)
+      
+      imputed <- impute(sim_data, varset)
+      results_imp <- analyse(imputed$ximp, varset)
+      n = n + 1
+      store_results(results_imp, n, percent, 'missForest', varset, 'mar', resultsDb)
+    }
+  }
+}
+
 dbDisconnect(resultsDb)
+
